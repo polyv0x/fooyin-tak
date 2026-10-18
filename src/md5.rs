@@ -120,6 +120,8 @@ mod tests {
     use super::Md5;
     #[test]
     fn rfc1321_vectors_and_fragmented_input() {
+        use std::fmt::Write;
+
         for (input, expected) in [
             ("", "d41d8cd98f00b204e9800998ecf8427e"),
             ("a", "0cc175b9c0f1b6a831c399e269772661"),
@@ -143,11 +145,10 @@ mod tests {
                 for chunk in input.as_bytes().chunks(size) {
                     hash.update(chunk);
                 }
-                let actual: String = hash
-                    .finish()
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect();
+                let mut actual = String::with_capacity(32);
+                for byte in hash.finish() {
+                    write!(actual, "{byte:02x}").unwrap();
+                }
                 assert_eq!(actual, expected);
             }
         }
