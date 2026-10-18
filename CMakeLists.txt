@@ -71,6 +71,17 @@ if(BUILD_TESTING)
     add_executable(tak_plugin_test tests/plugin_test.cpp)
     target_link_libraries(tak_plugin_test PRIVATE Fooyin::Core)
     add_dependencies(tak_plugin_test tak)
+    if(APPLE)
+        # The installed fooyin SDK uses @executable_path/../Frameworks for
+        # bundled dependencies. Give the test runner the same app layout.
+        set_target_properties(tak_plugin_test PROPERTIES MACOSX_BUNDLE TRUE)
+        add_custom_command(TARGET tak_plugin_test POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E create_symlink
+                    "$<TARGET_FILE_DIR:Fooyin::Core>"
+                    "$<TARGET_BUNDLE_CONTENT_DIR:tak_plugin_test>/Frameworks"
+            VERBATIM
+        )
+    endif()
     add_test(NAME plugin_integration
         COMMAND tak_plugin_test "$<TARGET_FILE:tak>" "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
 endif()

@@ -260,6 +260,10 @@ jobs:
             -DBUILD_TESTING=OFF -DBUILD_CCACHE=OFF -DBUILD_PCH=ON
           cmake --build build/fooyin-sdk --parallel 2
           cmake --install build/fooyin-sdk
+          # SDK deployment rewrites Mach-O dependencies with install_name_tool.
+          # Restore valid ad-hoc signatures before loading them in the tests.
+          codesign --force --deep --sign - "$PWD/build/sdk/fooyin.app"
+          codesign --verify --deep --strict "$PWD/build/sdk/fooyin.app"
       - name: Build plugin
         run: |
           cmake -S . -B build/plugin -G Ninja -DCMAKE_BUILD_TYPE=Release \

@@ -49,6 +49,8 @@ def main():
         if args.system == "macos":
             subprocess.run(["codesign", "--force", "--sign", "-", str(packaged_plugin)], check=True)
         executable = "tak_plugin_test" + (".exe" if args.system == "windows" else "")
+        if args.system == "macos":
+            executable = f"tak_plugin_test.app/Contents/MacOS/{executable}"
         test = build / executable
         if not test.exists():
             test = build / "Release" / executable
