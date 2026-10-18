@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// fooyin 0.13.1's audioformat.h needs <vector> to be included first.
+#include <vector>
+
 #include <core/engine/audioloader.h>
 #include <core/engine/inputplugin.h>
 #include <core/plugins/coreplugin.h>

@@ -74,7 +74,7 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: Restore fooyin SDK
         id: sdk
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /opt/fooyin
           key: sdk-bookworm-${{ matrix.arch }}-${{ env.FOOYIN_REVISION }}-v1
@@ -97,6 +97,12 @@ jobs:
             -DBUILD_TESTING=OFF -DBUILD_CCACHE=OFF
           cmake --build build/fooyin-sdk --parallel 3
           cmake --install build/fooyin-sdk --strip
+      - name: Cache fooyin SDK
+        if: steps.sdk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: /opt/fooyin
+          key: ${{ steps.sdk.outputs.cache-primary-key }}
       - name: Build plugin
         run: |
           cmake -S . -B build/plugin -G Ninja \
@@ -164,12 +170,13 @@ jobs:
           & ./build/vcpkg/bootstrap-vcpkg.bat -disableMetrics
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           New-Item -ItemType Directory -Force build/vcpkg-cache
-      - name: Cache dependencies
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      - name: Restore dependencies
+        id: dependencies
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/vcpkg-cache
           key: vcpkg-windows-x64-${{ env.VCToolsVersion }}-${{ hashFiles('ci/vcpkg/**') }}-v1
-      - name: Build fooyin SDK
+      - name: Configure fooyin SDK and build dependencies
         run: |
           cmake -S build/fooyin-src -B build/fooyin-sdk -G Ninja `
             -DCMAKE_BUILD_TYPE=Release "-DCMAKE_INSTALL_PREFIX=$env:GITHUB_WORKSPACE/build/sdk" `
@@ -181,6 +188,14 @@ jobs:
             -DBUILD_PLUGINS=OFF -DBUILD_ALSA=OFF -DBUILD_TRANSLATIONS=OFF `
             -DBUILD_TESTING=OFF -DBUILD_CCACHE=OFF -DBUILD_PCH=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Cache dependencies
+        if: steps.dependencies.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/vcpkg-cache
+          key: ${{ steps.dependencies.outputs.cache-primary-key }}
+      - name: Build fooyin SDK
+        run: |
           cmake --build build/fooyin-sdk --parallel 3
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --install build/fooyin-sdk
