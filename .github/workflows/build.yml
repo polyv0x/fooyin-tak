@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: build-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   FOOYIN_VERSION: '0.13.1'
@@ -230,7 +230,9 @@ jobs:
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
           echo "CC=$(brew --prefix llvm)/bin/clang" >> "$GITHUB_ENV"
           echo "CXX=$(brew --prefix llvm)/bin/clang++" >> "$GITHUB_ENV"
-          echo 'CXXFLAGS=-fexperimental-library' >> "$GITHUB_ENV"
+          # fooyin 0.13.1 includes <taglib/...>, while FindTaglib exposes only
+          # include/taglib. Homebrew's include parent is not a compiler default.
+          echo "CXXFLAGS=-fexperimental-library -I$(brew --prefix taglib)/include" >> "$GITHUB_ENV"
           echo "CMAKE_PREFIX_PATH=$(brew --prefix qt);$(brew --prefix icu4c@78)" >> "$GITHUB_ENV"
       - name: Build fooyin SDK
         run: |

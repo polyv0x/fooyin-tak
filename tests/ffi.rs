@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use fooyin_tak::{ffi::*, StreamInfo};
-use std::ffi::{c_void, CStr};
+use std::ffi::{c_char, c_void, CStr};
 use std::io::{Cursor, Read, Seek, SeekFrom};
 
 struct Input {
@@ -40,7 +40,7 @@ fn ffi_pcm_layout_error_latching_and_recovery() {
         seek: Some(seek),
     };
     let mut info = StreamInfo::default();
-    let mut error = [0i8; 256];
+    let mut error = [0 as c_char; 256];
     // SAFETY: all storage is live and exclusively accessed until tak_close.
     unsafe {
         let handle = tak_open(io, &mut info, error.as_mut_ptr(), error.len());
@@ -85,7 +85,7 @@ fn ffi_pcm_layout_error_latching_and_recovery() {
 #[test]
 fn null_arguments_and_short_error_buffer() {
     unsafe {
-        let mut message = [1i8; 1];
+        let mut message = [1 as c_char; 1];
         let io = TakIo {
             context: std::ptr::null_mut(),
             read: None,
