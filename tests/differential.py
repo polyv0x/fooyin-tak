@@ -50,7 +50,10 @@ def main():
     parser.add_argument("--encoder", type=Path)
     parser.add_argument("files", type=Path, nargs="*")
     args = parser.parse_args()
-    paths = args.files or sorted((Path(__file__).parent / "fixtures").glob("*.tak"))
+    # Include nested fixtures with saved source PCM. The large silent legacy
+    # seek-table fixture has no PCM blob and is covered by the Rust feature test.
+    paths = args.files or sorted(path.with_suffix(".tak") for path in
+                                 (Path(__file__).parent / "fixtures").rglob("*.s32le"))
     compare(args.decoder.resolve(), paths)
     if args.encoder:
         cases = []

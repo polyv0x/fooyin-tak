@@ -11,9 +11,34 @@ the source parameters and compression preset for each case.
 
 Normal Rust and CMake tests use these files directly, without Wine or FFmpeg.
 
+The `extended/` fixtures use `tests/generate_extended_fixtures.py` and TAKC
+2.3.3 with its frame verification and MD5 options. They cover 20 valid bits in
+24-bit PCM, explicit rear/side speaker layouts, a trailing LIST/ISFT WAV chunk,
+and sample counts around a 512-sample frame boundary. Their manifest records
+the original WAV header/trailer, raw PCM MD5 and speaker mask. Generation
+compares every decoded sample against both the source signal and FFmpeg.
+
 The `legacy-*` fixtures use TAKC 1.0 from
 https://www.rarewares.org/files/lossless/Tak1.0.zip and codec type 0.
 `tests/generate_legacy_fixtures.py` generates them from the same synthetic
 signals, enables the official encoder's verification, and checks the Rust
 decoder against the source PCM, including seeks. `legacy-manifest.json`
 records their parameters. No encoder executable is included.
+
+`legacy-seektable.tak` is 100 seconds of original synthetic silence: 800,000
+mono frames at 8 kHz, signed 16-bit PCM, encoded with TAKC 1.0 preset 0.
+Its legacy seek table contains 106 entries at ten-frame intervals. The tests
+validate every pointed-to header CRC and verify that seeking uses the table.
+No PCM reference file is needed because every source sample is zero.
+Recreate the source with Python's standard library, then encode it:
+
+```python
+import wave
+with wave.open("legacy-seektable.wav", "wb") as output:
+    output.setparams((1, 2, 8000, 800000, "NONE", "not compressed"))
+    output.writeframes(bytes(800000 * 2))
+```
+
+```sh
+Takc.exe -e -p0 -v -overwrite legacy-seektable.wav legacy-seektable.tak
+```

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(fooyin_tak VERSION 0.1.1 LANGUAGES CXX)
+project(fooyin_tak VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -26,7 +26,7 @@ add_custom_command(
     COMMAND "${CARGO_EXECUTABLE}" build --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
             --release --locked --offline --lib --target-dir "${TAK_CARGO_TARGET_DIR}"
     DEPENDS Cargo.toml Cargo.lock src/lib.rs src/codec.rs src/ffi.rs src/bits.rs src/header.rs src/codes.rs
-            src/legacy.rs src/legacy_codes.rs
+            src/legacy.rs src/legacy_codes.rs src/input.rs src/md5.rs src/metadata.rs
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "Building the Rust TAK decoder"
     VERBATIM

@@ -2,17 +2,22 @@
 
 A fooyin plugin for Tom's lossless Audio Kompressor (`.tak`) playback. Audio
 decoding, checksums, and seeking run in native Rust, with no Cargo dependencies.
-A small C++/Qt adapter connects the decoder to fooyin, following
-[fooyin-tta](https://github.com/polyv0x/fooyin-tta).
+A small C++/Qt adapter connects the decoder to fooyin.
 
 Supports TAK codec types 0 (legacy), 2 and 4, 8/16/24-bit integer PCM, mono, stereo and
 multichannel audio, sample-accurate seeking, and CRC-24 verification of stream
-information, frame headers and audio. Speaker positions are preserved when
-specified. Input must be readable and seekable.
+information, frame headers and audio. Speaker positions and valid-bit depth are
+preserved when specified. Readable files and synchronous sequential inputs are
+supported, including streams whose length becomes known at the final frame.
 
-The metadata reader supplies duration, sample count and audio properties for
-library scans, CUE sheets and waveforms. Tag editing and artwork reading are not
-provided; use fooyin's other metadata readers for tags and artwork.
+The metadata reader combines exact duration, sample count, encoder settings and
+audio properties with tags from fooyin's enabled metadata readers. APEv2 tags,
+ReplayGain, CUE sheets and artwork continue to use those readers. The plugin
+preserves existing CUE segment timing and does not edit tags.
+
+fooyin's integrity checks can verify the stored whole-PCM MD5. The Rust library,
+C API and standalone decoder also offer explicit damaged-frame recovery with
+silence or skipping; ordinary playback uses strict error reporting.
 
 See [format limits and validation](docs/validation.md) for details.
 
@@ -78,10 +83,12 @@ cargo fmt --all --check
 ```
 
 The [standalone decoder](examples/decode.rs) writes raw signed 32-bit
-little-endian PCM. An optional second argument sets the seek position in milliseconds.
+little-endian PCM and checks stored MD5 by default. An optional second argument
+sets the seek position in milliseconds; `-` reads stdin and `--status` reports
+verification and encoder information on stderr.
 
 ```sh
-cargo run --release --offline --example decode -- album.tak > album.s32le
+cargo run --release --offline --example decode -- --status album.tak > album.s32le
 ```
 
 CI runs native Rust and Qt plugin tests on every platform and tests each staged

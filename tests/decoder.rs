@@ -35,7 +35,7 @@ fn expected(name: &str) -> Vec<i32> {
         .map(|b| i32::from_le_bytes(b.try_into().unwrap()))
         .collect()
 }
-fn all<R: Read + Seek>(decoder: &mut Decoder<R>) -> Result<Vec<i32>, Error> {
+fn all<R: Read>(decoder: &mut Decoder<R>) -> Result<Vec<i32>, Error> {
     let shift = 32 - decoder.info().bits_per_sample;
     let mut samples = vec![0; 317 * usize::from(decoder.info().channels) + 1];
     let mut output = Vec::new();
@@ -84,7 +84,7 @@ fn sample_accurate_seeking_including_unvisited_frames() {
             u64::MAX,
             1,
         ] {
-            decoder.seek(sample);
+            decoder.seek(sample).unwrap();
             let start = sample.min(info.total_samples) as usize * channels;
             assert!(
                 all(&mut decoder).unwrap() == reference[start..],
@@ -92,13 +92,13 @@ fn sample_accurate_seeking_including_unvisited_frames() {
             );
             // Start from a fresh decoder to cover header scans without cached offsets.
             let mut fresh = Decoder::new(Cursor::new(data.clone())).unwrap();
-            fresh.seek(sample);
+            fresh.seek(sample).unwrap();
             assert!(
                 all(&mut fresh).unwrap() == reference[start..],
                 "{name}: fresh seek {sample}"
             );
         }
-        decoder.seek_ms(u64::MAX);
+        decoder.seek_ms(u64::MAX).unwrap();
         assert_eq!(decoder.position(), info.total_samples);
     }
 }

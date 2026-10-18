@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <core/engine/audioloader.h>
 #include <core/engine/inputplugin.h>
+#include <core/plugins/coreplugin.h>
 #include <core/plugins/plugin.h>
 
 #include <QBuffer>
@@ -10,6 +11,7 @@
 #include <QtEndian>
 
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -51,6 +53,45 @@ class ShortReadBuffer final : public QBuffer
 {
   protected:
     qint64 readData(char *data, qint64 size) override { return QBuffer::readData(data, std::min(size, qint64{7})); }
+};
+
+// A synchronous pipe-style source with no seek implementation. Small reads
+// ensure the decoder cannot rely on a whole header or frame arriving at once.
+class SequentialInput final : public QIODevice
+{
+  public:
+    explicit SequentialInput(QByteArray data) : m_data{std::move(data)}
+    {
+        check(open(QIODevice::ReadOnly | QIODevice::Unbuffered), "could not open sequential source");
+    }
+    bool isSequential() const override { return true; }
+    bool atEnd() const override { return m_offset == m_data.size(); }
+    std::function<void()> beforeRead;
+
+  protected:
+    qint64 readData(char *data, qint64 size) override
+    {
+        if(beforeRead)
+        {
+            beforeRead();
+        }
+        const auto count = std::min({size, qint64{7}, qint64{m_data.size() - m_offset}});
+        std::memcpy(data, m_data.constData() + m_offset, static_cast<size_t>(count));
+        m_offset += count;
+        return count;
+    }
+    qint64 writeData(const char *, qint64) override { return -1; }
+
+  private:
+    QByteArray m_data;
+    qsizetype m_offset{0};
+};
+
+class FailingSeekBuffer final : public QBuffer
+{
+  public:
+    bool failSeek{false};
+    bool seek(qint64 position) override { return !failSeek && QBuffer::seek(position); }
 };
 
 void verifyDecoder(const Fooyin::InputCreator &creator, const QString &directory, const QString &name,
@@ -171,7 +212,7 @@ void verifyReader(const Fooyin::InputCreator &creator, const QString &directory,
     track.setTitle(QStringLiteral("CUE title"));
     track.setArtists({QStringLiteral("CUE artist")});
     check(!reader->readTrack(source, track), "uninitialised reader succeeded");
-    check(reader->preferredExtensions().isEmpty(), "technical reader overrides configured tag readers");
+    check(reader->preferredExtensions().contains(QStringLiteral("tak")), "native TAK duration is not preferred");
     check(reader->init(source) && reader->readTrack(source, track), "TAK metadata read failed");
     check(track.sampleFrames() == static_cast<uint64_t>(pcm.size()) / 8, "incorrect total sample count");
     check(track.duration() == 2094, "missing or incorrect TAK duration");
@@ -249,6 +290,391 @@ void verifyRegistry(Fooyin::InputPlugin *plugin, const QString &directory)
     check(loaded.name == plugin->inputName(), "fooyin selected a different TAK decoder");
     compare(loaded.decoder->readBuffer(4096), load(directory + QStringLiteral("/stereo16.s32le")), 0);
 }
+
+struct TagReaderState
+{
+    int calls{0};
+    int initCalls{0};
+    QString title;
+    bool fail{false};
+    QIODevice *expectedDevice{nullptr};
+    Fooyin::ReaderCreator nested;
+    std::weak_ptr<Fooyin::AudioLoader> nestedLoader;
+};
+
+class TagReader final : public Fooyin::AudioReader
+{
+  public:
+    explicit TagReader(std::shared_ptr<TagReaderState> state) : m_state{std::move(state)} {}
+    QStringList extensions() const override { return {QStringLiteral("tak")}; }
+    bool canReadCover() const override { return true; }
+    bool canWriteMetaData() const override { return false; }
+    bool init(const Fooyin::AudioSource &source) override
+    {
+        ++m_state->initCalls;
+        check(source.device && source.device->isOpen(), "tag reader did not receive an opened source");
+        check(!m_state->expectedDevice || source.device == m_state->expectedDevice,
+              "tag handoff replaced borrowed device");
+        check(source.device->pos() == 0 && source.device->read(4) == QByteArray{"tBaK"},
+              "tag handoff did not rewind source");
+        return true;
+    }
+    bool readTrack(const Fooyin::AudioSource &source, Fooyin::Track &track) override
+    {
+        ++m_state->calls;
+        if(m_state->nested)
+        {
+            const auto reader = m_state->nested();
+            check(reader->init(source), "nested metadata init failed");
+            return reader->readTrack(source, track);
+        }
+        if(const auto loader = m_state->nestedLoader.lock())
+        {
+            check(m_state->calls < 10, "registry metadata delegation recursed without a bound");
+            return loader->readTrackMetadata(track);
+        }
+        check(track.title() != QStringLiteral("Failed tag title"), "failed reader changed track metadata");
+        track.setTitle(m_state->title);
+        track.setDuration(1);
+        track.setSampleFrames(1);
+        track.setSampleRate(1);
+        track.setBitDepth(1);
+        track.setRGTrackGain(-7.5F);
+        track.setRGAlbumPeak(0.9F);
+        track.replaceExtraTag(QStringLiteral("CUESHEET"), QStringLiteral("REM Synthetic embedded cue"));
+        track.replaceExtraTag(QStringLiteral("CUSTOM"), QStringList{QStringLiteral("one"), QStringLiteral("two")});
+        track.setTagTypes({QStringLiteral("APEv2")});
+        return !m_state->fail;
+    }
+    QByteArray readCover(const Fooyin::AudioSource &, const Fooyin::Track &, Fooyin::Track::Cover) override
+    {
+        return QByteArray{"test artwork"};
+    }
+
+  private:
+    std::shared_ptr<TagReaderState> m_state;
+};
+
+Fooyin::InputCreator configurePlugin(Fooyin::InputPlugin *plugin, Fooyin::CorePlugin *core,
+                                     const std::shared_ptr<Fooyin::AudioLoader> &registry)
+{
+    const Fooyin::CorePluginContext context{nullptr, nullptr,  nullptr, nullptr, nullptr,
+                                            nullptr, registry, nullptr, nullptr, nullptr};
+    core->initialise(context);
+    return plugin->inputCreator();
+}
+
+void verifyTagHandoff(Fooyin::InputPlugin *plugin, Fooyin::CorePlugin *core, const QString &directory)
+{
+    auto registry = std::make_shared<Fooyin::AudioLoader>();
+    const auto creator = configurePlugin(plugin, core, registry);
+    const auto failed = std::make_shared<TagReaderState>();
+    failed->title = QStringLiteral("Failed tag title");
+    failed->fail = true;
+    const auto first = std::make_shared<TagReaderState>();
+    first->title = QStringLiteral("First tag title");
+    const auto second = std::make_shared<TagReaderState>();
+    second->title = QStringLiteral("Second tag title");
+    const auto recursive = std::make_shared<TagReaderState>();
+    recursive->nested = creator.reader;
+    const auto recursiveRegistry = std::make_shared<TagReaderState>();
+    recursiveRegistry->nestedLoader = registry;
+    registry->addReader(QStringLiteral("TAK"), creator.reader);
+    registry->addReader(QStringLiteral("Recursive wrapper"),
+                        [recursive] { return std::make_unique<TagReader>(recursive); });
+    registry->addReader(QStringLiteral("Recursive registry wrapper"),
+                        [recursiveRegistry] { return std::make_unique<TagReader>(recursiveRegistry); });
+    registry->addReader(QStringLiteral("Failed reader"), [failed] { return std::make_unique<TagReader>(failed); });
+    registry->addReader(QStringLiteral("First reader"), [first] { return std::make_unique<TagReader>(first); });
+    registry->addReader(QStringLiteral("Second reader"), [second] { return std::make_unique<TagReader>(second); });
+    const QString path = directory + QStringLiteral("/stereo16.tak");
+    const QByteArray pcm = load(directory + QStringLiteral("/stereo16.s32le"));
+    Fooyin::Track track{path};
+    check(registry->readTrackMetadata(track), "tag delegation failed");
+    check(track.title() == first->title && first->calls == 1 && second->calls == 0,
+          "tag delegation ignored reader priority");
+    check(recursive->calls == 1 && recursiveRegistry->calls == 1 && failed->calls == 1,
+          "recursive/failing readers were not tried once");
+    check(track.duration() == 2094 && track.sampleFrames() == static_cast<uint64_t>(pcm.size()) / 8 &&
+              track.sampleRate() == 8000 && track.bitDepth() == 16,
+          "delegate hid exact native audio properties");
+    check(track.rgTrackGain() == -7.5F && track.rgAlbumPeak() == 0.9F &&
+              track.extraTag(QStringLiteral("CUSTOM")) == QStringList{QStringLiteral("one"), QStringLiteral("two")} &&
+              track.hasExtraTag(QStringLiteral("CUESHEET")) && track.tagTypes().contains(QStringLiteral("APEv2")),
+          "native metadata hid tags or ReplayGain");
+    check(track.tool() == QStringLiteral("TAK 2.3.3") && track.codecProfile() == QStringLiteral("-p4m"),
+          "TAK encoder metadata missing");
+
+    // Cover reading follows the host's independent canReadCover fall-through.
+    check(registry->readTrackCover(track, Fooyin::Track::Cover::Front) == QByteArray{"test artwork"},
+          "native reader hid artwork");
+    registry->setReaderEnabled(QStringLiteral("First reader"), false);
+    check(registry->readTrackMetadata(track) && track.title() == second->title,
+          "disabled tag reader was still selected");
+    registry->setReaderEnabled(QStringLiteral("First reader"), true);
+    registry->changeReaderIndex(QStringLiteral("Second reader"), 1);
+    check(registry->readTrackMetadata(track) && track.title() == second->title, "tag reader reordering ignored");
+
+    // A supplied device may represent an archive member unavailable by path.
+    QBuffer input;
+    input.setData(load(path));
+    check(input.open(QIODevice::ReadOnly) && input.seek(13), "could not prepare metadata device");
+    second->expectedDevice = &input;
+    Fooyin::AudioSource source;
+    source.filepath = QStringLiteral("missing-archive-member.tak");
+    source.device = &input;
+    auto reader = creator.reader();
+    check(reader->init(source) && input.pos() == 13, "metadata probe changed device position");
+    check(reader->readTrack(source, track) && input.pos() == 13 && input.isOpen(),
+          "tag delegation did not preserve caller device");
+    const auto archiveWrapper = std::make_shared<TagReaderState>();
+    archiveWrapper->title = QStringLiteral("Wrong archive wrapper");
+    registry->addReader(
+        QStringLiteral("Archive wrapper"), [archiveWrapper] { return std::make_unique<TagReader>(archiveWrapper); }, -1,
+        true);
+    const QString archivePath = QStringLiteral("/missing-test-archive.zip");
+    Fooyin::Track archived{
+        QStringLiteral("unpack://zip|%1|file://%2!music/track.tak").arg(archivePath.size()).arg(archivePath)};
+    check(archived.isInArchive(), "test archive path invalid");
+    check(reader->readTrack(source, archived) && archived.title() == second->title && archiveWrapper->initCalls == 0 &&
+              input.pos() == 13 && input.isOpen(),
+          "tag handoff reopened an archive instead of using its borrowed member");
+    second->expectedDevice = nullptr;
+
+    Fooyin::Track segment{track};
+    segment.setCuePath(QStringLiteral("Embedded"));
+    segment.setTitle(QStringLiteral("CUE title"));
+    segment.setArtists({QStringLiteral("CUE artist")});
+    segment.setSubsong(2);
+    segment.setOffset(1000);
+    segment.setDuration(1094);
+    segment.setSampleFrames(8752);
+    const int callsBefore = second->calls;
+    check(reader->readTrack(source, segment), "CUE metadata read failed");
+    check(segment.title() == QStringLiteral("CUE title") && segment.artist() == QStringLiteral("CUE artist") &&
+              segment.offset() == 1000 && segment.duration() == 1094 && segment.sampleFrames() == 8752 &&
+              segment.subsong() == 2 && segment.hasEmbeddedCue() && second->calls == callsBefore,
+          "tag delegation changed a bounded CUE segment");
+    segment.setCuePath({});
+    segment.setIsChapter(true);
+    check(reader->readTrack(source, segment) && segment.offset() == 1000 && segment.duration() == 1094 &&
+              segment.sampleFrames() == 8752 && segment.title() == QStringLiteral("CUE title"),
+          "native metadata changed a bounded chapter");
+
+    registry->setReaderEnabled(QStringLiteral("First reader"), false);
+    registry->setReaderEnabled(QStringLiteral("Second reader"), false);
+    check(reader->readTrack(source, track) && track.title() == second->title && track.duration() == 2094,
+          "failed tag readers prevented native metadata or changed existing tags");
+    const std::weak_ptr<Fooyin::AudioLoader> weakRegistry = registry;
+    registry.reset();
+    check(weakRegistry.expired(), "plugin retained AudioLoader in an ownership cycle");
+    check(reader->readTrack(source, track) && track.duration() == 2094, "expired loader broke native metadata");
+}
+
+void verifySequentialInput(const Fooyin::InputCreator &creator, const QString &directory)
+{
+    const QString path = directory + QStringLiteral("/stereo16.tak");
+    const QByteArray data = load(path);
+    const QByteArray expected = load(directory + QStringLiteral("/stereo16.s32le"));
+    SequentialInput input{data};
+    Fooyin::AudioSource source;
+    source.filepath = QStringLiteral("synthetic-pipe.tak");
+    source.device = &input;
+    const auto reader = creator.reader();
+    Fooyin::AudioSource fileSource;
+    fileSource.filepath = path;
+    check(reader->init(fileSource), "could not prime metadata reader state");
+    check(!reader->init(source), "metadata probe accepted an irreversible sequential source");
+    Fooyin::Track metadata{source.filepath};
+    check(!reader->readTrack(source, metadata), "rejected pipe probe retained previous metadata");
+    // Decoding this same pipe from its signature proves the rejected probe
+    // neither consumed input nor closed the caller's device.
+    const auto decoder = creator.decoder();
+    check(decoder->init(source, Fooyin::Track{source.filepath}, Fooyin::AudioDecoder::VerifyIntegrity).has_value(),
+          "sequential input was rejected");
+    check(!decoder->isSeekable(), "pipe advertised seeking");
+    size_t offset = 0;
+    while(true)
+    {
+        const auto result = decoder->readAudio(997);
+        if(result.status == Fooyin::AudioDecoder::ReadStatus::EndOfStream)
+        {
+            break;
+        }
+        check(result.status == Fooyin::AudioDecoder::ReadStatus::DecodedAudio, "sequential decoding failed");
+        compare(result.buffer, expected, offset);
+        offset += result.buffer.byteCount();
+    }
+    check(offset == static_cast<size_t>(expected.size()) && decoder->takeWarnings().isEmpty(),
+          "sequential input lost samples or did not verify");
+    decoder->stop();
+    check(input.isOpen(), "decoder closed borrowed pipe");
+
+    SequentialInput cancelled{data};
+    source.device = &cancelled;
+    const auto abortDecoder = creator.decoder();
+    check(abortDecoder->init(source, {}, Fooyin::AudioDecoder::None).has_value(), "cancel source init failed");
+    cancelled.beforeRead = [&abortDecoder] { abortDecoder->requestAbort(); };
+    const auto result = abortDecoder->readAudio(4096);
+    check(result.status == Fooyin::AudioDecoder::ReadStatus::Error &&
+              result.error.contains(QStringLiteral("cancelled")),
+          "cancellation during source read was ignored");
+
+    FailingSeekBuffer broken;
+    broken.setData(data);
+    check(broken.open(QIODevice::ReadOnly), "could not open seek failure source");
+    source.device = &broken;
+    const auto seekDecoder = creator.decoder();
+    check(seekDecoder->init(source, {}, Fooyin::AudioDecoder::None).has_value(), "seek failure source init failed");
+    broken.failSeek = true;
+    seekDecoder->seek(1000);
+    check(seekDecoder->readAudio(4096).status == Fooyin::AudioDecoder::ReadStatus::Error,
+          "seek failure was hidden from playback");
+    broken.failSeek = false;
+    seekDecoder->seek(0);
+    compare(seekDecoder->readBuffer(4096), expected, 0);
+    seekDecoder->requestAbort();
+    seekDecoder->seek(1000);
+    check(seekDecoder->readAudio(4096).status == Fooyin::AudioDecoder::ReadStatus::Error,
+          "cancelled seek continued decoding");
+}
+
+QByteArray changeMetadata(QByteArray data, unsigned type, const std::function<void(char *, size_t)> &change)
+{
+    size_t position = 4;
+    while(position + 4 <= static_cast<size_t>(data.size()))
+    {
+        const auto *header = reinterpret_cast<const uint8_t *>(data.constData() + position);
+        const size_t size = header[1] | (size_t{header[2]} << 8) | (size_t{header[3]} << 16);
+        check(position + 4 + size <= static_cast<size_t>(data.size()), "bad test metadata size");
+        if((header[0] & 0x7f) == type)
+        {
+            check(size >= 3, "missing metadata checksum");
+            char *block = data.data() + position + 4;
+            change(block, size - 3);
+            uint32_t crc = 0xb704ce;
+            for(size_t index = 0; index < size - 3; ++index)
+            {
+                crc ^= uint32_t{static_cast<uint8_t>(block[index])} << 16;
+                for(int bit = 0; bit < 8; ++bit)
+                {
+                    crc = (crc << 1) ^ ((crc & 0x800000) ? 0x864cfbU : 0U);
+                }
+            }
+            block[size - 3] = static_cast<char>(crc);
+            block[size - 2] = static_cast<char>(crc >> 8);
+            block[size - 1] = static_cast<char>(crc >> 16);
+            return data;
+        }
+        check((header[0] & 0x7f) != 0, "test metadata not found");
+        position += 4 + size;
+    }
+    throw std::runtime_error("test metadata not found");
+}
+
+Fooyin::AudioDecoder::ReadResult drain(Fooyin::AudioDecoder &decoder)
+{
+    while(true)
+    {
+        auto result = decoder.readAudio(4096);
+        if(result.status != Fooyin::AudioDecoder::ReadStatus::DecodedAudio)
+        {
+            return result;
+        }
+    }
+}
+
+void verifyIntegrityAndUnknownLength(const Fooyin::InputCreator &creator, const QString &directory)
+{
+    const QByteArray original = load(directory + QStringLiteral("/stereo16.tak"));
+    QByteArray wrongMd5 = changeMetadata(original, 6, [](char *block, size_t) { block[0] ^= 1; });
+    QBuffer input{&wrongMd5};
+    check(input.open(QIODevice::ReadOnly), "could not open MD5 test source");
+    Fooyin::AudioSource source;
+    source.filepath = QStringLiteral("integrity-test.tak");
+    source.device = &input;
+    const Fooyin::Track track{source.filepath};
+    const auto decoder = creator.decoder();
+    check(decoder->init(source, track, Fooyin::AudioDecoder::None).has_value(), "MD5 metadata rejected at open");
+    check(drain(*decoder).status == Fooyin::AudioDecoder::ReadStatus::EndOfStream,
+          "optional MD5 verification ignored host flag");
+    decoder->stop();
+    check(decoder->init(source, track, Fooyin::AudioDecoder::VerifyIntegrity).has_value(),
+          "integrity decoder failed to initialise");
+    const auto result = drain(*decoder);
+    check(result.status == Fooyin::AudioDecoder::ReadStatus::Error &&
+              result.error.contains(QStringLiteral("MD5"), Qt::CaseInsensitive),
+          "VerifyIntegrity failed to detect stored PCM MD5 mismatch");
+
+    QBuffer good;
+    good.setData(original);
+    check(good.open(QIODevice::ReadOnly), "could not open integrity fixture");
+    source.device = &good;
+    const auto traversal = creator.decoder();
+    check(traversal->init(source, track, Fooyin::AudioDecoder::VerifyIntegrity).has_value(),
+          "valid integrity source failed");
+    traversal->seek(13);
+    check(drain(*traversal).status == Fooyin::AudioDecoder::ReadStatus::EndOfStream,
+          "partial MD5 traversal failed instead of becoming incomplete");
+    check(!traversal->takeWarnings().isEmpty() && traversal->takeWarnings().isEmpty(),
+          "partial verification warning missing or not drained");
+    traversal->seek(0);
+    check(drain(*traversal).status == Fooyin::AudioDecoder::ReadStatus::EndOfStream &&
+              traversal->takeWarnings().isEmpty(),
+          "full MD5 verification did not restart after seeking to zero");
+
+    QBuffer legacy;
+    legacy.setData(load(directory + QStringLiteral("/legacy-stereo16.tak")));
+    check(legacy.open(QIODevice::ReadOnly), "could not open legacy integrity source");
+    source.device = &legacy;
+    const auto withoutMd5 = creator.decoder();
+    check(withoutMd5->init(source, track, Fooyin::AudioDecoder::VerifyIntegrity).has_value() &&
+              drain(*withoutMd5).status == Fooyin::AudioDecoder::ReadStatus::EndOfStream,
+          "legacy CRC verification failed");
+    const auto warnings = withoutMd5->takeWarnings();
+    check(warnings.size() == 1 && warnings.front().contains(QStringLiteral("no stored PCM MD5")),
+          "missing MD5 was reported as whole-PCM verification");
+
+    QByteArray unknownLength = changeMetadata(original, 1,
+                                              [](char *block, size_t size)
+                                              {
+                                                  check(size >= 7, "test stream info too short");
+                                                  // The stored sample count is the 35-bit field following codec,
+                                                  // profile and frame size (6 + 4 + 4 bits).
+                                                  for(size_t bit = 14; bit < 49; ++bit)
+                                                  {
+                                                      block[bit / 8] = static_cast<char>(
+                                                          static_cast<uint8_t>(block[bit / 8]) & ~(1U << (bit % 8)));
+                                                  }
+                                              });
+    SequentialInput pipe{unknownLength};
+    source.device = &pipe;
+    const auto streaming = creator.decoder();
+    const auto options = Fooyin::AudioDecoder::UpdateTracks | Fooyin::AudioDecoder::VerifyIntegrity;
+    check(streaming->init(source, track, options).has_value(), "unknown-length stream rejected");
+    check(streaming->trackHasChanged() && streaming->changedTrack().sampleFrames() == 0,
+          "unknown-length stream invented a sample count");
+    const auto pcm = load(directory + QStringLiteral("/stereo16.s32le"));
+    size_t offset = 0;
+    while(true)
+    {
+        const auto read = streaming->readAudio(4096);
+        if(read.status == Fooyin::AudioDecoder::ReadStatus::EndOfStream)
+        {
+            break;
+        }
+        check(read.status == Fooyin::AudioDecoder::ReadStatus::DecodedAudio, "unknown-length decoding failed");
+        compare(read.buffer, pcm, offset);
+        offset += read.buffer.byteCount();
+    }
+    check(offset == static_cast<size_t>(pcm.size()) && streaming->takeWarnings().isEmpty(),
+          "unknown-length stream failed PCM/MD5 validation");
+    check(streaming->trackHasChanged(), "resolved duration was not exposed to host");
+    const Fooyin::Track resolved = streaming->changedTrack();
+    check(resolved.sampleFrames() == static_cast<uint64_t>(pcm.size()) / 8 && resolved.duration() == 2094 &&
+              resolved.tool() == QStringLiteral("TAK 2.3.3") && !streaming->trackHasChanged(),
+          "resolved stream properties incorrect");
+}
 } // namespace
 
 int main(int argc, char **argv)
@@ -271,13 +697,15 @@ int main(int argc, char **argv)
         auto *plugin = qobject_cast<Fooyin::InputPlugin *>(object);
         check(plugin != nullptr, "missing fooyin input interface");
         check(plugin->inputName() == QStringLiteral("TAK"), "wrong plugin identity");
+        auto *core = qobject_cast<Fooyin::CorePlugin *>(object);
+        check(core != nullptr, "missing core metadata registry interface");
         const auto creator = plugin->inputCreator();
         check(static_cast<bool>(creator.decoder), "missing decoder factory");
         check(static_cast<bool>(creator.reader), "missing metadata reader factory");
         const QString directory = QString::fromLocal8Bit(argv[2]);
-        for(const auto *name : {"mono8", "stereo8", "stereo16", "surround24", "silence16",
-                               "legacy-mono8", "legacy-stereo8", "legacy-stereo16", "legacy-stereo24",
-                               "legacy-silence16", "legacy-negative24"})
+        for(const auto *name :
+            {"mono8", "stereo8", "stereo16", "surround24", "silence16", "legacy-mono8", "legacy-stereo8",
+             "legacy-stereo16", "legacy-stereo24", "legacy-silence16", "legacy-negative24"})
         {
             for(bool deviceSource : {false, true})
             {
@@ -289,6 +717,9 @@ int main(int argc, char **argv)
         verifyReader(creator, directory, true);
         verifyCueScan(creator, directory);
         verifyRegistry(plugin, directory);
+        verifyTagHandoff(plugin, core, directory);
+        verifySequentialInput(creator, directory);
+        verifyIntegrityAndUnknownLength(creator, directory);
         std::cout << "Plugin loaded; metadata, CUE scans, PCM, timestamps, seeking, EOF, cancellation, reinit, device "
                      "ownership, and error "
                      "handling passed\n";
