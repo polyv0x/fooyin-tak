@@ -1,0 +1,62 @@
+{
+  "legacy-mono8": {
+    "rate": 8000,
+    "channels": 1,
+    "bits": 8,
+    "samples": 4109,
+    "preset": "0",
+    "signal": "mixed",
+    "codec": 0,
+    "encoder": "TAKC 1.0"
+  },
+  "legacy-stereo8": {
+    "rate": 11025,
+    "channels": 2,
+    "bits": 8,
+    "samples": 4517,
+    "preset": "1",
+    "signal": "mixed",
+    "codec": 0,
+    "encoder": "TAKC 1.0"
+  },
+  "legacy-stereo16": {
+    "rate": 44100,
+    "channels": 2,
+    "bits": 16,
+    "samples": 22067,
+    "preset": "4m",
+    "signal": "mixed",
+    "codec": 0,
+    "encoder": "TAKC 1.0"
+  },
+  "legacy-stereo24": {
+    "rate": 96000,
+    "channels": 2,
+    "bits": 24,
+    "samples": 24031,
+    "preset": "3m",
+    "signal": "mixed",
+    "codec": 0,
+    "encoder": "TAKC 1.0"
+  },
+  "legacy-silence16": {
+    "rate": 22050,
+    "channels": 2,
+    "bits": 16,
+    "samples": 10007,
+    "preset": "2",
+    "signal": "silence",
+    "codec": 0,
+    "encoder": "TAKC 1.0"
+  },
+  "legacy-negative24": {
+    "rate": 32000,
+    "channels": 1,
+    "bits": 24,
+    "samples": 8017,
+    "preset": "4m",
+    "signal": "negative",
+    "codec": 0,
+    "encoder": "TAKC 1.0"
+  }
+}

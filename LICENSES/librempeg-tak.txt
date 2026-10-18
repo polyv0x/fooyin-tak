@@ -1,0 +1,18 @@
+Legacy TAK codec type 0 decoding in src/legacy.rs and src/legacy_codes.rs is
+adapted from Librempeg libavcodec/takdec.c and libavcodec/tak.h at commit:
+d8566dbd63453903c80cfe28d72583d1fe2b386d
+https://github.com/librempeg/librempeg/blob/d8566dbd63453903c80cfe28d72583d1fe2b386d/libavcodec/takdec.c
+
+Copyright (c) 2012 Paul B Mahol
+Rust adaptation Copyright (c) 2026 polyv0x
+
+Librempeg is free software; you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation; either version 3 of the License, or (at your option) any later version.
+
+Librempeg is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+A copy is included in the project's LICENSE file.
+
+No Librempeg code is linked or invoked at runtime.

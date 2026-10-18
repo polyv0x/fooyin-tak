@@ -1,0 +1,289 @@
+name: Build and test
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  FOOYIN_VERSION: '0.13.1'
+  FOOYIN_REVISION: '9f6e9364b9d1cdcccecf598db08b84b3f701e1b0'
+  RUSTUP_TOOLCHAIN: '1.85.1'
+  QT_QPA_PLATFORM: offscreen
+
+jobs:
+  rust:
+    name: Rust checks and minimum version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - run: python3 ci/check-version.py
+      - name: Install toolchains
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+          rustup toolchain install 1.74.0 --profile minimal
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --offline --all-targets -- -D warnings
+      - run: cargo +1.74.0 test --locked --offline
+
+  linux:
+    name: Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    container: debian:bookworm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates cmake curl git ninja-build pkg-config python3 \
+            libicu-dev libtag1-dev zlib1g-dev qt6-base-dev libqt6svg6-dev \
+            libqt6sql6-sqlite libavcodec-dev libavfilter-dev libavformat-dev \
+            libavutil-dev libswresample-dev
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            https://sh.rustup.rs -o /tmp/rustup-init.sh
+          sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain "$RUSTUP_TOOLCHAIN"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Restore fooyin SDK
+        id: sdk
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: /opt/fooyin
+          key: sdk-bookworm-${{ matrix.arch }}-${{ env.FOOYIN_REVISION }}-v1
+      - name: Check out fooyin
+        if: steps.sdk.outputs.cache-hit != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: fooyin/fooyin
+          ref: ${{ env.FOOYIN_REVISION }}
+          path: build/fooyin-src
+          submodules: recursive
+          persist-credentials: false
+      - name: Build fooyin SDK
+        if: steps.sdk.outputs.cache-hit != 'true'
+        run: |
+          cmake -S build/fooyin-src -B build/fooyin-sdk -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/fooyin \
+            -DCMAKE_INSTALL_LIBDIR=lib -DINSTALL_HEADERS=ON \
+            -DBUILD_PLUGINS=OFF -DBUILD_ALSA=OFF -DBUILD_TRANSLATIONS=OFF \
+            -DBUILD_TESTING=OFF -DBUILD_CCACHE=OFF
+          cmake --build build/fooyin-sdk --parallel 3
+          cmake --install build/fooyin-sdk --strip
+      - name: Build plugin
+        run: |
+          cmake -S . -B build/plugin -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/opt/fooyin \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN/..' \
+            -DTAK_PLUGIN_INSTALL_DIR=plugins -DBUILD_TESTING=ON
+          cmake --build build/plugin --parallel 3
+      - run: ctest --test-dir build/plugin --output-on-failure
+      - name: Package and test installed plugin
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: python3 ci/package.py build/plugin linux "$ARCH" "$FOOYIN_VERSION"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Windows x64 (MSVC)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      QT_VERSION: '6.8.3'
+      VCPKG_DISABLE_METRICS: 'true'
+      VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/build/vcpkg-cache,readwrite'
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Check out fooyin
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: fooyin/fooyin
+          ref: ${{ env.FOOYIN_REVISION }}
+          path: build/fooyin-src
+          submodules: recursive
+          persist-credentials: false
+      - name: Check out vcpkg
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: microsoft/vcpkg
+          ref: '40f3c709db80acf154ac4b17a1f83c564ebd022e'
+          path: build/vcpkg
+          persist-credentials: false
+      - name: Install Qt
+        uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          archives: qtbase qtsvg qttools
+          arch: win64_msvc2022_64
+          cache: true
+      - name: Set up MSVC
+        uses: TheMrMilchmann/setup-msvc-dev@368ef7d1ee4d1171b31d4a7f67f4d954f903f5a9 # v4
+        with:
+          arch: amd64
+      - name: Install build tools
+        run: |
+          rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./build/vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force build/vcpkg-cache
+      - name: Cache dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/vcpkg-cache
+          key: vcpkg-windows-x64-${{ env.VCToolsVersion }}-${{ hashFiles('ci/vcpkg/**') }}-v1
+      - name: Build fooyin SDK
+        run: |
+          cmake -S build/fooyin-src -B build/fooyin-sdk -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release "-DCMAKE_INSTALL_PREFIX=$env:GITHUB_WORKSPACE/build/sdk" `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:GITHUB_WORKSPACE/build/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+            "-DVCPKG_MANIFEST_DIR=$env:GITHUB_WORKSPACE/ci/vcpkg" -DVCPKG_INSTALLED_DIR=C:/v `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            "-DVCPKG_OVERLAY_TRIPLETS=$env:GITHUB_WORKSPACE/ci/vcpkg/triplets" `
+            "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR" -DINSTALL_FHS=OFF -DINSTALL_HEADERS=ON `
+            -DBUILD_PLUGINS=OFF -DBUILD_ALSA=OFF -DBUILD_TRANSLATIONS=OFF `
+            -DBUILD_TESTING=OFF -DBUILD_CCACHE=OFF -DBUILD_PCH=ON
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build/fooyin-sdk --parallel 3
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --install build/fooyin-sdk
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "$env:GITHUB_WORKSPACE/build/sdk" >> $env:GITHUB_PATH
+          'C:/v/x64-windows/bin' >> $env:GITHUB_PATH
+      - name: Build plugin
+        run: |
+          cmake -S . -B build/plugin -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            "-DCMAKE_PREFIX_PATH=$env:GITHUB_WORKSPACE/build/sdk;$env:QT_ROOT_DIR" `
+            -DTAK_PLUGIN_INSTALL_DIR=plugins -DBUILD_TESTING=ON
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build/plugin --parallel 3
+      - run: ctest --test-dir build/plugin --output-on-failure
+      - run: python ci/package.py build/plugin windows x86_64 $env:FOOYIN_VERSION
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-x86_64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  macos:
+    name: macOS Apple Silicon (experimental)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Check out fooyin
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: fooyin/fooyin
+          ref: ${{ env.FOOYIN_REVISION }}
+          path: build/fooyin-src
+          submodules: recursive
+          persist-credentials: false
+      - name: Install dependencies
+        run: |
+          brew install cmake ninja pkgconf qt taglib ffmpeg icu4c@78 llvm
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          echo "CC=$(brew --prefix llvm)/bin/clang" >> "$GITHUB_ENV"
+          echo "CXX=$(brew --prefix llvm)/bin/clang++" >> "$GITHUB_ENV"
+          echo 'CXXFLAGS=-fexperimental-library' >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix qt);$(brew --prefix icu4c@78)" >> "$GITHUB_ENV"
+      - name: Build fooyin SDK
+        run: |
+          cmake -S build/fooyin-src -B build/fooyin-sdk -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PWD/build/sdk" \
+            -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
+            -DICU_ROOT="$(brew --prefix icu4c@78)" -DINSTALL_HEADERS=ON \
+            -DBUILD_PLUGINS=OFF -DBUILD_ALSA=OFF -DBUILD_TRANSLATIONS=OFF \
+            -DBUILD_TESTING=OFF -DBUILD_CCACHE=OFF -DBUILD_PCH=ON
+          cmake --build build/fooyin-sdk --parallel 2
+          cmake --install build/fooyin-sdk
+      - name: Build plugin
+        run: |
+          cmake -S . -B build/plugin -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$PWD/build/sdk;$CMAKE_PREFIX_PATH" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
+            -DCMAKE_INSTALL_RPATH='@loader_path/../Frameworks;@executable_path/../Frameworks' \
+            -DTAK_PLUGIN_INSTALL_DIR=plugins -DBUILD_TESTING=ON
+          cmake --build build/plugin --parallel 2
+      - run: ctest --test-dir build/plugin --output-on-failure
+      - run: python3 ci/package.py build/plugin macos aarch64 "$FOOYIN_VERSION"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: macos-aarch64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish tagged builds
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [rust, linux, windows, macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - run: python3 ci/check-version.py
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          merge-multiple: true
+          path: dist
+      - name: Verify and publish archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(find dist -maxdepth 1 -name '*.sha256' | wc -l)" -eq 4
+          (cd dist && cat *.sha256 > SHA256SUMS && sha256sum --check SHA256SUMS)
+          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.zip dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
+            --title "TAK $GITHUB_REF_NAME" --notes-file .github/release-notes.md
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false

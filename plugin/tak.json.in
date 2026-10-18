@@ -1,0 +1,17 @@
+{
+    "Name": "TAK",
+    "Author": "polyv0x",
+    "Copyright": "Copyright (c) 2026 polyv0x",
+    "Version": "@PROJECT_VERSION@",
+    "Category": "Audio.Input",
+    "Description": "Native Rust TAK Lossless audio decoder.",
+    "License": [
+        "fooyin_tak is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.",
+        "",
+        "fooyin_tak is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more details.",
+        "",
+        "You should have received a copy of the GNU General Public License along with fooyin_tak.  If not, see <http://www.gnu.org/licenses/>",
+        "",
+        "TAK decoding is adapted from FFmpeg and Librempeg (Copyright 2012 Paul B Mahol), LGPL-2.1-or-later and GPL-3.0-or-later respectively; see LICENSES/ffmpeg-tak.txt and LICENSES/librempeg-tak.txt."
+    ]
+}

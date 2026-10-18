@@ -1,0 +1,66 @@
+{
+  "mono8": {
+    "rate": 8000,
+    "channels": 1,
+    "bits": 8,
+    "samples": 4109,
+    "preset": "0",
+    "signal": "mixed"
+  },
+  "stereo8": {
+    "rate": 11025,
+    "channels": 2,
+    "bits": 8,
+    "samples": 4517,
+    "preset": "2",
+    "signal": "mixed"
+  },
+  "stereo16": {
+    "rate": 8000,
+    "channels": 2,
+    "bits": 16,
+    "samples": 16752,
+    "preset": "4m",
+    "signal": "mixed"
+  },
+  "surround24": {
+    "rate": 48000,
+    "channels": 6,
+    "bits": 24,
+    "samples": 24321,
+    "preset": "4m",
+    "signal": "mixed"
+  },
+  "silence16": {
+    "rate": 44100,
+    "channels": 2,
+    "bits": 16,
+    "samples": 10007,
+    "preset": "2",
+    "signal": "silence"
+  },
+  "stereo24": {
+    "rate": 96000,
+    "channels": 2,
+    "bits": 24,
+    "samples": 20017,
+    "preset": "4m",
+    "signal": "mixed"
+  },
+  "short24": {
+    "rate": 48000,
+    "channels": 6,
+    "bits": 24,
+    "samples": 7,
+    "preset": "2",
+    "signal": "mixed"
+  },
+  "negative16": {
+    "rate": 22050,
+    "channels": 1,
+    "bits": 16,
+    "samples": 4017,
+    "preset": "4m",
+    "signal": "negative"
+  }
+}
